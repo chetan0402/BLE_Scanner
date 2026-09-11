@@ -7,9 +7,9 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.RecyclerView
+import com.rise.blescanner.JsonViewActivity
 import com.rise.blescanner.databinding.ItemRecordingBinding
 import com.rise.blescanner.models.RecordingInfo
-import com.rise.blescanner.CsvViewActivity
 import java.io.File
 
 class RecordAdapter(
@@ -31,7 +31,7 @@ class RecordAdapter(
 
     override fun getItemCount(): Int = recordingList.size
 
-    inner class RecordViewHolder(
+    class RecordViewHolder(
         private val binding: ItemRecordingBinding
     ) : RecyclerView.ViewHolder(binding.root) {
 
@@ -49,8 +49,8 @@ class RecordAdapter(
                     Toast.makeText(context, "Recording file does not exist", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                val intent = Intent(context, CsvViewActivity::class.java).apply {
-                    putExtra("csv_path", file.absolutePath)
+                val intent = Intent(context, JsonViewActivity::class.java).apply {
+                    putExtra("json_path", file.absolutePath)
                 }
                 context.startActivity(intent)
             }
@@ -68,11 +68,11 @@ class RecordAdapter(
                         file
                     )
                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/csv"
+                        type = "application/json"
                         putExtra(Intent.EXTRA_STREAM, uri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
-                    context.startActivity(Intent.createChooser(shareIntent, "Share Telemetry CSV"))
+                    context.startActivity(Intent.createChooser(shareIntent, "Share Telemetry JSON"))
                 } catch (e: Exception) {
                     Toast.makeText(context, "Failed to share: ${e.message}", Toast.LENGTH_LONG).show()
                 }

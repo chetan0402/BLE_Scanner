@@ -2,16 +2,13 @@ package com.rise.blescanner
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -29,18 +26,23 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.toColorInt
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.rise.blescanner.databinding.ActivityMainBinding
 import com.rise.blescanner.models.RecordingInfo
 import com.rise.blescanner.store.ConfigStore
 import com.rise.blescanner.store.RecordStore
+import org.json.JSONObject
+import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 @SuppressLint("SetTextI18n")
 class MainActivity : AppCompatActivity() {
@@ -56,12 +58,6 @@ class MainActivity : AppCompatActivity() {
     private var dataPointsCount = 0
     private var startTimeMillis = 0L
 
-    private var zones = arrayOf("Zone_1", "Zone_2", "Zone_3")
-    private var selectedZone: String? = null
-
-    private var imuOptions = arrayOf("Walking", "Standing", "Left Turn", "Right Turn")
-    private var selectedIMU = "Standing"
-
     private var currentAccelX: Float? = null
     private var currentAccelY: Float? = null
     private var currentAccelZ: Float? = null
@@ -70,59 +66,77 @@ class MainActivity : AppCompatActivity() {
     private var currentGyroY: Float? = null
     private var currentGyroZ: Float? = null
 
-    private var currentBle1Rssi: Int? = null
-    private var currentBle2Rssi: Int? = null
-    private var currentBle3Rssi: Int? = null
+    private val currentBleRssis = ConcurrentHashMap<String, Int>()
+    private val trackedBleMacs = mutableSetOf<String>()
 
-    private var csvFileWriter: java.io.BufferedWriter? = null
-    private var currentCsvFile: File? = null
-    private var writeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var lastAccelerometer: FloatArray? = null
+    private var lastMagnetometer: FloatArray? = null
+    private var currentAzimuth: Float = 0f
+
+    private var jsonFileWriter: BufferedWriter? = null
+    private var currentJsonFile: File? = null
+    private var writeExecutor = Executors.newSingleThreadExecutor()
     private var lastFlushTime = 0L
     private var lastUiUpdateTime = 0L
 
 
-    var isAccelEnabled = false;
-    var isGyroEnabled = false;
+    var isAccelEnabled = false
+    var isGyroEnabled = false
 
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             if (!isRecording) return
-            if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-                val x = event.values[0]
-                val y = event.values[1]
-                val z = event.values[2]
-                currentAccelX = x
-                currentAccelY = y
-                currentAccelZ = z
-                binding.txtAccelXAxis.text = String.format(Locale.US, "%.6f", x)
-                binding.txtAccelYAxis.text = String.format(Locale.US, "%.6f", y)
-                binding.txtAccelZAxis.text = String.format(Locale.US, "%.6f", z)
-                binding.visualizerAccel.addValues(x, y, z)
-            } else if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
-                val x = event.values[0]
-                val y = event.values[1]
-                val z = event.values[2]
-                currentGyroX = x
-                currentGyroY = y
-                currentGyroZ = z
-                binding.txtGyroXAxis.text = String.format(Locale.US, "%.6f", x)
-                binding.txtGyroYAxis.text = String.format(Locale.US, "%.6f", y)
-                binding.txtGyroZAxis.text = String.format(Locale.US, "%.6f", z)
-                binding.visualizerGyro.addValues(x, y, z)
-            }
-            if (isAccelEnabled || isGyroEnabled) {
-                if (currentBle1Rssi != null && currentBle2Rssi != null && currentBle3Rssi != null) {
-                    binding.waitingText.visibility = View.INVISIBLE
-                    binding.txtRecordingStatus.text = "RECORDING"
-                    writeTelemetryRow()
-                } else {
-                    binding.waitingText.visibility = View.VISIBLE
-                    binding.txtRecordingStatus.text = "WAITING"
+            when (event.sensor.type) {
+                Sensor.TYPE_ACCELEROMETER -> {
+                    val x = event.values[0]
+                    val y = event.values[1]
+                    val z = event.values[2]
+                    currentAccelX = x
+                    currentAccelY = y
+                    currentAccelZ = z
+                    lastAccelerometer = event.values.clone()
+                    updateAzimuth()
+                    binding.txtAccelXAxis.text = String.format(Locale.US, "%.6f", x)
+                    binding.txtAccelYAxis.text = String.format(Locale.US, "%.6f", y)
+                    binding.txtAccelZAxis.text = String.format(Locale.US, "%.6f", z)
+                    binding.visualizerAccel.addValues(x, y, z)
+                }
+                Sensor.TYPE_GYROSCOPE -> {
+                    val x = event.values[0]
+                    val y = event.values[1]
+                    val z = event.values[2]
+                    currentGyroX = x
+                    currentGyroY = y
+                    currentGyroZ = z
+                    binding.txtGyroXAxis.text = String.format(Locale.US, "%.6f", x)
+                    binding.txtGyroYAxis.text = String.format(Locale.US, "%.6f", y)
+                    binding.txtGyroZAxis.text = String.format(Locale.US, "%.6f", z)
+                    binding.visualizerGyro.addValues(x, y, z)
+                }
+                Sensor.TYPE_MAGNETIC_FIELD -> {
+                    lastMagnetometer = event.values.clone()
+                    updateAzimuth()
+                }
+                Sensor.TYPE_STEP_DETECTOR -> {
+                    writeJsonTelemetry(true)
                 }
             }
         }
 
         override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+    }
+
+    private fun updateAzimuth() {
+        val accel = lastAccelerometer ?: return
+        val mag = lastMagnetometer ?: return
+        val r = FloatArray(9)
+        val i = FloatArray(9)
+        if (SensorManager.getRotationMatrix(r, i, accel, mag)) {
+            val orientation = FloatArray(3)
+            SensorManager.getOrientation(r, orientation)
+            currentAzimuth = Math.toDegrees(orientation[0].toDouble()).toFloat()
+            if (currentAzimuth < 0) currentAzimuth += 360f
+        }
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -146,7 +160,16 @@ class MainActivity : AppCompatActivity() {
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACTIVITY_RECOGNITION
             )
         } else {
             arrayOf(
@@ -176,7 +199,7 @@ class MainActivity : AppCompatActivity() {
     private val bluetoothEnableLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.resultCode == RESULT_OK) {
             checkLocationHardwareAndState()
         } else {
             showFatalDialog(
@@ -217,7 +240,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         configStore = ConfigStore(this)
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         checkAndRequestPermissions()
         setupUI()
         binding.visualizerGyro.setMaxValue(6f)
@@ -225,10 +248,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        displayConfiguredAnchors()
-        setupZoneSelector()
-        setupIMUSelector()
-
+        
         isAccelEnabled = configStore.getRecordAccel()
         isGyroEnabled = configStore.getRecordGyro()
         val showVisualizer = configStore.getShowVisualizer()
@@ -266,9 +286,9 @@ class MainActivity : AppCompatActivity() {
             binding.btnToggleRecording.text = "STOP RECORDING"
             binding.btnToggleRecording.setIconResource(R.drawable.ic_stop)
             binding.btnToggleRecording.backgroundTintList =
-                android.content.res.ColorStateList.valueOf(Color.parseColor("#F44336"))
+                android.content.res.ColorStateList.valueOf("#F44336".toColorInt())
             binding.txtRecordingStatus.text = "RECORDING"
-            binding.txtRecordingStatus.setTextColor(Color.parseColor("#4CAF50"))
+            binding.txtRecordingStatus.setTextColor("#4CAF50".toColorInt())
         } else {
             binding.btnToggleRecording.text = "START RECORDING"
             binding.btnToggleRecording.setIconResource(R.drawable.ic_play_arrow)
@@ -280,18 +300,8 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
             binding.txtRecordingStatus.text = "IDLE"
-            binding.txtRecordingStatus.setTextColor(Color.parseColor("#6E726E"))
+            binding.txtRecordingStatus.setTextColor("#6E726E".toColorInt())
         }
-    }
-
-    private fun displayConfiguredAnchors() {
-        val b1 = configStore.getBle1()
-        val b2 = configStore.getBle2()
-        val b3 = configStore.getBle3()
-
-        binding.txtBle1Mac.text = b1?.let { "BLE 1 : ${it.macAddress}" } ?: "BLE1: NOT CONFIGURED"
-        binding.txtBle2Mac.text = b2?.let { "BLE 2 : ${it.macAddress}" } ?: "BLE2: NOT CONFIGURED"
-        binding.txtBle3Mac.text = b3?.let { "BLE 3 : ${it.macAddress}" } ?: "BLE3: NOT CONFIGURED"
     }
 
     private fun showSettings() {
@@ -304,24 +314,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRecording() {
-        val b1 = configStore.getBle1()
-        val b2 = configStore.getBle2()
-        val b3 = configStore.getBle3()
-
-        if (b1 == null || b2 == null || b3 == null) {
-            Toast.makeText(this, "Configure all 3 anchors in settings first", Toast.LENGTH_LONG)
-                .show()
-            return
-        }
-
         if (scanner == null) {
             Toast.makeText(this, "Bluetooth scanner initialization failed", Toast.LENGTH_SHORT)
                 .show()
-            return
-        }
-
-        if (selectedZone == null) {
-            Toast.makeText(this, "Please select a target zone first", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -360,15 +355,14 @@ class MainActivity : AppCompatActivity() {
             if (!dir.exists()) dir.mkdirs()
 
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            currentCsvFile = File(dir, "BLE_Telemetry_$timestamp.csv")
+            currentJsonFile = File(dir, "BLE_Telemetry_$timestamp.json")
             if (writeExecutor.isShutdown) {
-                writeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+                writeExecutor = Executors.newSingleThreadExecutor()
             }
-            csvFileWriter = java.io.BufferedWriter(FileWriter(currentCsvFile, true))
-            csvFileWriter?.write("TimeStamp,BLE1_RSSI,BLE2_RSSI,BLE3_RSSI,Accel_X,Accel_Y,Accel_Z,Gyro_X,Gyro_Y,Gyro_Z,IMU,Zone\n")
-            csvFileWriter?.flush()
+            jsonFileWriter = BufferedWriter(FileWriter(currentJsonFile, true))
+            lastFlushTime = System.currentTimeMillis()
         } catch (e: IOException) {
-            Toast.makeText(this, "Failed to create CSV file: ${e.message}", Toast.LENGTH_LONG)
+            Toast.makeText(this, "Failed to create JSON file: ${e.message}", Toast.LENGTH_LONG)
                 .show()
             return
         }
@@ -380,9 +374,17 @@ class MainActivity : AppCompatActivity() {
         binding.txtDataPointsCount.text = "0"
         binding.txtRecordingDuration.text = "00:00:00"
 
-        currentBle1Rssi = null
-        currentBle2Rssi = null
-        currentBle3Rssi = null
+        currentBleRssis.clear()
+        trackedBleMacs.clear()
+        val macs = configStore.getTrackedMacs()
+        if (macs.isNotEmpty()) {
+            macs.split(",").forEach { 
+                val trimmed = it.trim()
+                if (trimmed.isNotEmpty()) {
+                    trackedBleMacs.add(trimmed.uppercase())
+                }
+            }
+        }
 
         currentAccelX = null
         currentAccelY = null
@@ -391,39 +393,29 @@ class MainActivity : AppCompatActivity() {
         currentGyroY = null
         currentGyroZ = null
 
-        binding.txtBle1Rssi.text = "--"
-        binding.txtBle2Rssi.text = "--"
-        binding.txtBle3Rssi.text = "--"
+        lastAccelerometer = null
+        lastMagnetometer = null
+        currentAzimuth = 0f
+
         binding.txtAccelXAxis.text = "--"
         binding.txtAccelYAxis.text = "--"
         binding.txtAccelZAxis.text = "--"
         binding.txtGyroXAxis.text = "--"
         binding.txtGyroYAxis.text = "--"
         binding.txtGyroZAxis.text = "--"
-        binding.txtCurrentZone.text = selectedZone ?: "--"
-        binding.txtCurrentIMU.text = selectedIMU
         binding.visualizerAccel.clear()
         binding.visualizerGyro.clear()
 
-        if (isAccelEnabled) {
-            val accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            if (accel != null) {
-                sensorManager.registerListener(
-                    sensorListener,
-                    accel,
-                    SensorManager.SENSOR_DELAY_NORMAL
-                )
-            }
-        }
+        val sensors = listOf(
+            Sensor.TYPE_ACCELEROMETER,
+            Sensor.TYPE_GYROSCOPE,
+            Sensor.TYPE_MAGNETIC_FIELD,
+            Sensor.TYPE_STEP_DETECTOR
+        )
 
-        if (isGyroEnabled) {
-            val gyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-            if (gyro != null) {
-                sensorManager.registerListener(
-                    sensorListener,
-                    gyro,
-                    SensorManager.SENSOR_DELAY_NORMAL
-                )
+        sensors.forEach { type ->
+            sensorManager.getDefaultSensor(type)?.let { sensor ->
+                sensorManager.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
             }
         }
 
@@ -450,9 +442,9 @@ class MainActivity : AppCompatActivity() {
         try {
             writeExecutor.submit {
                 try {
-                    csvFileWriter?.flush()
-                    csvFileWriter?.close()
-                    csvFileWriter = null
+                    jsonFileWriter?.flush()
+                    jsonFileWriter?.close()
+                    jsonFileWriter = null
                 } catch (e: IOException) {
                     e.printStackTrace()
                 }
@@ -460,11 +452,11 @@ class MainActivity : AppCompatActivity() {
 
             val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
             val durationStr = binding.txtRecordingDuration.text.toString()
-            val csvLocation = currentCsvFile?.absolutePath ?: ""
+            val fileLocation = currentJsonFile?.absolutePath ?: ""
             val entryCount = dataPointsCount
 
             val recordStore = RecordStore(this)
-            recordStore.saveRecording(RecordingInfo(dateStr, durationStr, csvLocation, entryCount))
+            recordStore.saveRecording(RecordingInfo(dateStr, durationStr, fileLocation, entryCount))
 
             Toast.makeText(this, "Saved Recording", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
@@ -478,53 +470,18 @@ class MainActivity : AppCompatActivity() {
         }
         if (!permissionsOk) return
 
-        binding.waitingText.visibility = View.VISIBLE
-        binding.txtRecordingStatus.text = "WAITING"
-
         Log.d("BLE", "Starting BLE scan")
         scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 super.onScanResult(callbackType, result)
                 if (!isRecording) return
 
-                val address = result.device.address
+                val address = result.device.address.uppercase()
                 val rssi = result.rssi
 
-                val b1 = configStore.getBle1()?.macAddress
-                val b2 = configStore.getBle2()?.macAddress
-                val b3 = configStore.getBle3()?.macAddress
-
-                var isMatched = false
-
-                when (address) {
-                    b1 -> {
-                        currentBle1Rssi = rssi
-                        binding.txtBle1Rssi.text = "$rssi"
-                        isMatched = true
-                    }
-
-                    b2 -> {
-                        currentBle2Rssi = rssi
-                        binding.txtBle2Rssi.text = "$rssi"
-                        isMatched = true
-                    }
-
-                    b3 -> {
-                        currentBle3Rssi = rssi
-                        binding.txtBle3Rssi.text = "$rssi"
-                        isMatched = true
-                    }
-                }
-
-                if (isMatched) {
-                    if (currentBle1Rssi != null && currentBle2Rssi != null && currentBle3Rssi != null) {
-                        binding.waitingText.visibility = View.INVISIBLE
-                        binding.txtRecordingStatus.text = "RECORDING"
-                        writeTelemetryRow()
-                    } else {
-                        binding.waitingText.visibility = View.VISIBLE
-                        binding.txtRecordingStatus.text = "WAITING"
-                    }
+                if (trackedBleMacs.contains(address)) {
+                    currentBleRssis[address] = rssi
+                    writeJsonTelemetry(false)
                 }
             }
 
@@ -557,69 +514,34 @@ class MainActivity : AppCompatActivity() {
         scanCallback = null
     }
 
-    private fun setupZoneSelector() {
-        val adapter = android.widget.ArrayAdapter(
-            this,
-            android.R.layout.simple_dropdown_item_1line,
-            zones
-        )
-
-        binding.spinnerZoneSelector.setAdapter(adapter)
-
-        binding.spinnerZoneSelector.setOnItemClickListener { parent, _, position, _ ->
-            selectedZone = parent.getItemAtPosition(position).toString()
-        }
-
-    }
-
-    private fun setupIMUSelector() {
-        val adapter = android.widget.ArrayAdapter(
-            this,
-            android.R.layout.simple_dropdown_item_1line,
-            imuOptions
-        )
-
-        binding.spinnerIMUSelector.setAdapter(adapter)
-        binding.spinnerIMUSelector.setText("Standing", false)
-
-        binding.spinnerIMUSelector.setOnItemClickListener { parent, _, position, _ ->
-            selectedIMU = parent.getItemAtPosition(position).toString()
-        }
-    }
-
-    private fun formatFloatToPlain(value: Float?): String {
-        if (value == null || value.isNaN() || value.isInfinite()) return ""
-        return java.math.BigDecimal(value.toString()).toPlainString()
-    }
-
-    private fun writeTelemetryRow() {
-
-        if (isAccelEnabled && (currentAccelX == null || currentAccelY == null || currentAccelZ == null || currentAccelX!!.isNaN() || currentAccelY!!.isNaN() || currentAccelZ!!.isNaN())) {
-            return
-        }
-
-        if (isGyroEnabled && (currentGyroX == null || currentGyroY == null || currentGyroZ == null || currentGyroX!!.isNaN() || currentGyroY!!.isNaN() || currentGyroZ!!.isNaN())) {
-            return
-        }
-
-        val r1 = currentBle1Rssi?.toString() ?: ""
-        val r2 = currentBle2Rssi?.toString() ?: ""
-        val r3 = currentBle3Rssi?.toString() ?: ""
-
-        binding.txtCurrentZone.text = selectedZone ?: "--"
-        binding.txtCurrentIMU.text = selectedIMU
-
-        val ax = if (isAccelEnabled) formatFloatToPlain(currentAccelX) else ""
-        val ay = if (isAccelEnabled) formatFloatToPlain(currentAccelY) else ""
-        val az = if (isAccelEnabled) formatFloatToPlain(currentAccelZ) else ""
-
-        val gx = if (isGyroEnabled) formatFloatToPlain(currentGyroX) else ""
-        val gy = if (isGyroEnabled) formatFloatToPlain(currentGyroY) else ""
-        val gz = if (isGyroEnabled) formatFloatToPlain(currentGyroZ) else ""
-
-        val zoneVal = selectedZone ?: ""
+    private fun writeJsonTelemetry(stepTriggered: Boolean) {
         val currentTime = System.currentTimeMillis()
-        val csvRow = "$currentTime,$r1,$r2,$r3,$ax,$ay,$az,$gx,$gy,$gz,$selectedIMU,$zoneVal\n"
+        
+        val bleData = JSONObject()
+        for ((mac, rssi) in currentBleRssis) {
+            bleData.put(mac, rssi)
+        }
+
+        val jsonRow = JSONObject().apply {
+            put("timestamp", currentTime)
+            put("ble_rssis", bleData)
+            put("step_triggered", stepTriggered)
+            put("azimuth", String.format(Locale.US, "%.2f", currentAzimuth).toDouble())
+            
+            // Optional: include other sensor data if useful
+            if (isAccelEnabled) {
+                put("accel_x", currentAccelX ?: 0f)
+                put("accel_y", currentAccelY ?: 0f)
+                put("accel_z", currentAccelZ ?: 0f)
+            }
+            if (isGyroEnabled) {
+                put("gyro_x", currentGyroX ?: 0f)
+                put("gyro_y", currentGyroY ?: 0f)
+                put("gyro_z", currentGyroZ ?: 0f)
+            }
+        }
+
+        val jsonString = jsonRow.toString() + "\n"
 
         dataPointsCount++
 
@@ -630,10 +552,10 @@ class MainActivity : AppCompatActivity() {
 
         writeExecutor.execute {
             try {
-                csvFileWriter?.write(csvRow)
+                jsonFileWriter?.write(jsonString)
                 val now = System.currentTimeMillis()
                 if (now - lastFlushTime > 5000) {
-                    csvFileWriter?.flush()
+                    jsonFileWriter?.flush()
                     lastFlushTime = now
                 }
             } catch (e: IOException) {
@@ -656,7 +578,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkBluetoothHardwareAndState() {
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
 
         if (bluetoothAdapter == null) {
@@ -679,7 +601,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun isLocationEnabled(): Boolean {
         val locationManager =
-            getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            getSystemService(LOCATION_SERVICE) as? android.location.LocationManager
         return locationManager?.let {
             it.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
                     it.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
@@ -702,7 +624,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun initializeApplicationLogic() {
         scanner = bluetoothAdapter?.bluetoothLeScanner
-        displayConfiguredAnchors()
     }
 
     private fun showFatalDialog(title: String, message: String, onDismiss: () -> Unit) {

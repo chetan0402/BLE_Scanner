@@ -18,12 +18,13 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.Window
 import androidx.annotation.RequiresPermission
+import androidx.core.graphics.drawable.toDrawable
+import androidx.core.util.isNotEmpty
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.rise.blescanner.adapters.BleDeviceAdapter
 import com.rise.blescanner.databinding.DialogBleSelectorBinding
 import com.rise.blescanner.models.BleDeviceUiInfo
 import com.rise.blescanner.store.BleDeviceConfig
-import androidx.core.graphics.drawable.toDrawable
 
 class BleSelectorDialog(
     context: Context,
@@ -95,14 +96,14 @@ class BleSelectorDialog(
         try {
             val name = result.device.name
             if (!name.isNullOrBlank()) return name
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
         }
 
         val recordName = result.scanRecord?.deviceName
         if (!recordName.isNullOrBlank()) return recordName
 
         val manufacturerData = result.scanRecord?.manufacturerSpecificData
-        if (manufacturerData != null && manufacturerData.size() > 0) {
+        if (manufacturerData != null && manufacturerData.isNotEmpty()) {
             val mfgId = manufacturerData.keyAt(0)
             return when (mfgId) {
                 0x004C -> "Apple Device"
