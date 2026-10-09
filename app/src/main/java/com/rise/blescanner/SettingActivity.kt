@@ -38,24 +38,9 @@ class SettingActivity : AppCompatActivity() {
 
     private fun loadCurrentConfigurations() {
         binding.etTrackedMacs.setText(configStore.getTrackedMacs())
-        binding.switchRecordAccel.isChecked = configStore.getRecordAccel()
-        binding.switchRecordGyro.isChecked = configStore.getRecordGyro()
-        binding.switchShowVisualizer.isChecked = configStore.getShowVisualizer()
     }
 
     private fun setupClickListeners() {
-        binding.switchRecordAccel.setOnCheckedChangeListener { _, isChecked ->
-            configStore.saveRecordAccel(isChecked)
-        }
-
-        binding.switchRecordGyro.setOnCheckedChangeListener { _, isChecked ->
-            configStore.saveRecordGyro(isChecked)
-        }
-
-        binding.switchShowVisualizer.setOnCheckedChangeListener { _, isChecked ->
-            configStore.saveShowVisualizer(isChecked)
-        }
-
         binding.btnBack.setOnClickListener {
             saveAllConfigurations()
             finish()

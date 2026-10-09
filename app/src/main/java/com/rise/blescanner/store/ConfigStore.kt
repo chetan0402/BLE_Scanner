@@ -17,9 +17,6 @@ class ConfigStore(context: Context) {
     companion object {
         private const val PREFS_NAME = "ble_scanner_config"
         private const val KEY_TRACKED_MACS = "tracked_macs"
-        private const val KEY_RECORD_ACCEL = "record_accel"
-        private const val KEY_RECORD_GYRO = "record_gyro"
-        private const val KEY_SHOW_VISUALIZER = "show_visualizer"
     }
 
     fun saveTrackedMacs(macs: String) {
@@ -28,29 +25,5 @@ class ConfigStore(context: Context) {
 
     fun getTrackedMacs(): String {
         return prefs.getString(KEY_TRACKED_MACS, "") ?: ""
-    }
-
-    fun saveRecordAccel(enable: Boolean) {
-        prefs.edit { putBoolean(KEY_RECORD_ACCEL, enable) }
-    }
-
-    fun getRecordAccel(): Boolean {
-        return prefs.getBoolean(KEY_RECORD_ACCEL, true)
-    }
-
-    fun saveRecordGyro(enable: Boolean) {
-        prefs.edit { putBoolean(KEY_RECORD_GYRO, enable) }
-    }
-
-    fun getRecordGyro(): Boolean {
-        return prefs.getBoolean(KEY_RECORD_GYRO, true)
-    }
-
-    fun saveShowVisualizer(enable: Boolean) {
-        prefs.edit { putBoolean(KEY_SHOW_VISUALIZER, enable) }
-    }
-
-    fun getShowVisualizer(): Boolean {
-        return prefs.getBoolean(KEY_SHOW_VISUALIZER, false)
     }
 }

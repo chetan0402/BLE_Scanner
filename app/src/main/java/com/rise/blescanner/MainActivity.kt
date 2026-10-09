@@ -9,21 +9,23 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
-import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.toColorInt
@@ -58,20 +60,8 @@ class MainActivity : AppCompatActivity() {
     private var dataPointsCount = 0
     private var startTimeMillis = 0L
 
-    private var currentAccelX: Float? = null
-    private var currentAccelY: Float? = null
-    private var currentAccelZ: Float? = null
-
-    private var currentGyroX: Float? = null
-    private var currentGyroY: Float? = null
-    private var currentGyroZ: Float? = null
-
     private val currentBleRssis = ConcurrentHashMap<String, Int>()
     private val trackedBleMacs = mutableSetOf<String>()
-
-    private var lastAccelerometer: FloatArray? = null
-    private var lastMagnetometer: FloatArray? = null
-    private var currentAzimuth: Float = 0f
 
     private var jsonFileWriter: BufferedWriter? = null
     private var currentJsonFile: File? = null
@@ -79,44 +69,10 @@ class MainActivity : AppCompatActivity() {
     private var lastFlushTime = 0L
     private var lastUiUpdateTime = 0L
 
-
-    var isAccelEnabled = false
-    var isGyroEnabled = false
-
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             if (!isRecording) return
             when (event.sensor.type) {
-                Sensor.TYPE_ACCELEROMETER -> {
-                    val x = event.values[0]
-                    val y = event.values[1]
-                    val z = event.values[2]
-                    currentAccelX = x
-                    currentAccelY = y
-                    currentAccelZ = z
-                    lastAccelerometer = event.values.clone()
-                    updateAzimuth()
-                    binding.txtAccelXAxis.text = String.format(Locale.US, "%.6f", x)
-                    binding.txtAccelYAxis.text = String.format(Locale.US, "%.6f", y)
-                    binding.txtAccelZAxis.text = String.format(Locale.US, "%.6f", z)
-                    binding.visualizerAccel.addValues(x, y, z)
-                }
-                Sensor.TYPE_GYROSCOPE -> {
-                    val x = event.values[0]
-                    val y = event.values[1]
-                    val z = event.values[2]
-                    currentGyroX = x
-                    currentGyroY = y
-                    currentGyroZ = z
-                    binding.txtGyroXAxis.text = String.format(Locale.US, "%.6f", x)
-                    binding.txtGyroYAxis.text = String.format(Locale.US, "%.6f", y)
-                    binding.txtGyroZAxis.text = String.format(Locale.US, "%.6f", z)
-                    binding.visualizerGyro.addValues(x, y, z)
-                }
-                Sensor.TYPE_MAGNETIC_FIELD -> {
-                    lastMagnetometer = event.values.clone()
-                    updateAzimuth()
-                }
                 Sensor.TYPE_STEP_DETECTOR -> {
                     writeJsonTelemetry(true)
                 }
@@ -124,19 +80,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
-    }
-
-    private fun updateAzimuth() {
-        val accel = lastAccelerometer ?: return
-        val mag = lastMagnetometer ?: return
-        val r = FloatArray(9)
-        val i = FloatArray(9)
-        if (SensorManager.getRotationMatrix(r, i, accel, mag)) {
-            val orientation = FloatArray(3)
-            SensorManager.getOrientation(r, orientation)
-            currentAzimuth = Math.toDegrees(orientation[0].toDouble()).toFloat()
-            if (currentAzimuth < 0) currentAzimuth += 360f
-        }
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -227,7 +170,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO)
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
 
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -243,20 +186,6 @@ class MainActivity : AppCompatActivity() {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         checkAndRequestPermissions()
         setupUI()
-        binding.visualizerGyro.setMaxValue(6f)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        
-        isAccelEnabled = configStore.getRecordAccel()
-        isGyroEnabled = configStore.getRecordGyro()
-        val showVisualizer = configStore.getShowVisualizer()
-
-        binding.layoutAccelVisual.visibility = if (isAccelEnabled) View.VISIBLE else View.GONE
-        binding.layoutGyroVisual.visibility = if (isGyroEnabled) View.VISIBLE else View.GONE
-        binding.layoutSensorVisuals.visibility =
-            if (showVisualizer && (isAccelEnabled || isGyroEnabled)) View.VISIBLE else View.GONE
     }
 
     private fun setupUI() {
@@ -286,14 +215,14 @@ class MainActivity : AppCompatActivity() {
             binding.btnToggleRecording.text = "STOP RECORDING"
             binding.btnToggleRecording.setIconResource(R.drawable.ic_stop)
             binding.btnToggleRecording.backgroundTintList =
-                android.content.res.ColorStateList.valueOf("#F44336".toColorInt())
+                ColorStateList.valueOf("#F44336".toColorInt())
             binding.txtRecordingStatus.text = "RECORDING"
             binding.txtRecordingStatus.setTextColor("#4CAF50".toColorInt())
         } else {
             binding.btnToggleRecording.text = "START RECORDING"
             binding.btnToggleRecording.setIconResource(R.drawable.ic_play_arrow)
             binding.btnToggleRecording.backgroundTintList =
-                android.content.res.ColorStateList.valueOf(
+                ColorStateList.valueOf(
                     ContextCompat.getColor(
                         this,
                         R.color.primary_green
@@ -316,36 +245,6 @@ class MainActivity : AppCompatActivity() {
     private fun startRecording() {
         if (scanner == null) {
             Toast.makeText(this, "Bluetooth scanner initialization failed", Toast.LENGTH_SHORT)
-                .show()
-            return
-        }
-
-        isAccelEnabled = configStore.getRecordAccel()
-        isGyroEnabled = configStore.getRecordGyro()
-
-        val hasAccel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null
-        val hasGyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null
-
-        if (isAccelEnabled && !hasAccel) {
-            AlertDialog.Builder(this)
-                .setTitle("Sensor Unavailable")
-                .setMessage("Accelerometer is not available on this device. Please disable it in Settings.")
-                .setPositiveButton("Go to Settings") { _, _ ->
-                    startActivity(Intent(this, SettingActivity::class.java))
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            return
-        }
-
-        if (isGyroEnabled && !hasGyro) {
-            AlertDialog.Builder(this)
-                .setTitle("Sensor Unavailable")
-                .setMessage("Gyroscope is not available on this device. Please disable it in Settings.")
-                .setPositiveButton("Go to Settings") { _, _ ->
-                    startActivity(Intent(this, SettingActivity::class.java))
-                }
-                .setNegativeButton("Cancel", null)
                 .show()
             return
         }
@@ -386,37 +285,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        currentAccelX = null
-        currentAccelY = null
-        currentAccelZ = null
-        currentGyroX = null
-        currentGyroY = null
-        currentGyroZ = null
-
-        lastAccelerometer = null
-        lastMagnetometer = null
-        currentAzimuth = 0f
-
-        binding.txtAccelXAxis.text = "--"
-        binding.txtAccelYAxis.text = "--"
-        binding.txtAccelZAxis.text = "--"
-        binding.txtGyroXAxis.text = "--"
-        binding.txtGyroYAxis.text = "--"
-        binding.txtGyroZAxis.text = "--"
-        binding.visualizerAccel.clear()
-        binding.visualizerGyro.clear()
-
-        val sensors = listOf(
-            Sensor.TYPE_ACCELEROMETER,
-            Sensor.TYPE_GYROSCOPE,
-            Sensor.TYPE_MAGNETIC_FIELD,
-            Sensor.TYPE_STEP_DETECTOR
-        )
-
-        sensors.forEach { type ->
-            sensorManager.getDefaultSensor(type)?.let { sensor ->
-                sensorManager.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-            }
+        sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let { sensor ->
+            sensorManager.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
         }
 
         updateRecordingUiState()
@@ -434,8 +304,6 @@ class MainActivity : AppCompatActivity() {
 
         stopBleScan()
         sensorManager.unregisterListener(sensorListener)
-        binding.visualizerAccel.clear()
-        binding.visualizerGyro.clear()
 
         binding.txtDataPointsCount.text = dataPointsCount.toString()
 
@@ -526,19 +394,6 @@ class MainActivity : AppCompatActivity() {
             put("timestamp", currentTime)
             put("ble_rssis", bleData)
             put("step_triggered", stepTriggered)
-            put("azimuth", String.format(Locale.US, "%.2f", currentAzimuth).toDouble())
-            
-            // Optional: include other sensor data if useful
-            if (isAccelEnabled) {
-                put("accel_x", currentAccelX ?: 0f)
-                put("accel_y", currentAccelY ?: 0f)
-                put("accel_z", currentAccelZ ?: 0f)
-            }
-            if (isGyroEnabled) {
-                put("gyro_x", currentGyroX ?: 0f)
-                put("gyro_y", currentGyroY ?: 0f)
-                put("gyro_z", currentGyroZ ?: 0f)
-            }
         }
 
         val jsonString = jsonRow.toString() + "\n"
@@ -563,7 +418,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
 
     private fun checkAndRequestPermissions() {
         val missingPermissions = requiredPermissions.filter {
@@ -601,10 +455,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun isLocationEnabled(): Boolean {
         val locationManager =
-            getSystemService(LOCATION_SERVICE) as? android.location.LocationManager
+            getSystemService(LOCATION_SERVICE) as? LocationManager
         return locationManager?.let {
-            it.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
-                    it.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+            it.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    it.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         } ?: false
     }
 
